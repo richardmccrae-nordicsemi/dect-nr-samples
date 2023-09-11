@@ -2,18 +2,18 @@
 Copyright (c) 2023  Nordic Semiconductor ASA
 SPDX-License-Identifier: BSD-3-Clause
 *******************************************************************************
-Simple broadcast of DECT NR+ messages, for initial testing. 
+Simple broadcast of DECT NR+ messages, for initial testing.
 
 2 Development Kits for 9160 needed
    1st transmits a counter value, needs only power
    2nd receives the value, needs terminal for printout
 
-PC SW: nRF Connect for Desktop 
+PC SW: nRF Connect for Desktop
 For development Zephyr and IDE (VSCode and nRF Connect extension)
 
-Device first listens on channel for 10secs, if no transmission detected, 
-starts sending for-ever. Another device can start, listens and stays in listen 
-mode, simple statistics are provided at end, when button is pressed. Reset 
+Device first listens on channel for 10secs, if no transmission detected,
+starts sending for-ever. Another device can start, listens and stays in listen
+mode, simple statistics are provided at end, when button is pressed. Reset
 board to start again
 
 RX accepts first received counter value, and after that detects if messages
@@ -21,7 +21,7 @@ lost between receptions, increases a counter for missed messages
 - RX calculates CRC error callbacks
 - RX printouts basic data for each message received the to show progress
 - RX will end if nothing received in 10 secs or if any button on DK pressed
-- When RX ends, simple statistics shown, success rate is 
+- When RX ends, simple statistics shown, success rate is
   #received_msgs / (#received_msgs + #missed_msgs + #crc_errors)
 
 TX Mode: leds blink
@@ -58,14 +58,16 @@ RECEIVED DATA, 1389, rssi_2, -50,  DATA, 20318, missed/crc errors,  20
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <dk_buttons_and_leds.h>
+#include <nrf_modem.h>
 #include <nrf_modem_dect_phy.h>
+#include <pm_config.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(app);
 
 //state flags
 // switch between RX or TX role
-int RECEIVER_ROLE = 0;
+int RECEIVER_ROLE = 1;
 int INIT_DONE = 0;
 int EXIT =0;
 
@@ -108,7 +110,7 @@ struct phy_ctrl_field_common
     uint32_t pad            : 24;
 };
 
-//timer is called if there is nothing received, in received role, for 10 seconds 
+//timer is called if there is nothing received, in received role, for 10 seconds
 void timer_expiry_function(struct k_timer *dummy)
 {
     //timeout after the initial role selection means exit
@@ -127,7 +129,7 @@ void button_handler(uint32_t button_state, uint32_t has_changed)
     EXIT=1;
 }
 
-//ETSI TS 103 636-2  spec 8.3.3 
+//ETSI TS 103 636-2  spec 8.3.3
 int32_t calcRSSI(int16_t recrssi, int is_success){
   float resp =-20-((-recrssi-1)*0.5);
   //avg_new=avg_old+(value-avg_old)/n
@@ -145,7 +147,7 @@ void init( const uint64_t *time, int status,
 {
   if(status==0) LOG_DBG("DECT Init done ");
   else LOG_ERR("INIT FAILED");
-  
+
 }
 
 void op_complete(const uint64_t *time, int status,
@@ -167,7 +169,7 @@ void pcc(
   const struct nrf_modem_dect_phy_rx_pcc_status *status,
   const union nrf_modem_dect_phy_hdr *hdr)
 {
-  LOG_DBG("pcc_cb phy_header_valid %d rssi_2 %d", status->is_phy_header_valid, status->rssi_2);
+  LOG_DBG("pcc_cb phy_header_valid %d rssi_2 %d", status->header_status, status->rssi_2);
   return;
 }
 
@@ -215,8 +217,13 @@ void rssi(
   const uint64_t *time,
   const struct nrf_modem_dect_phy_rssi_result *status)
 {
-  LOG_DBG(" %d, %d, %d", status->carrier, status->unframed.high_level, status->unframed.low_level);   
+  LOG_DBG(" %d, %d, %d", status->carrier, status->unframed.high_level, status->unframed.low_level);
   return;
+}
+
+static void on_rx_rssi(const struct nrf_modem_dect_phy_rx_rssi_meas *rssi)
+{
+	printk("ON_RX_RSSI\n");
 }
 
 void link_config(const uint64_t *time, int status)
@@ -226,19 +233,20 @@ void link_config(const uint64_t *time, int status)
 
 void time_get(const uint64_t *time, int status)
 {
-  LOG_DBG("time_query_cb time %"PRIu64"", *time); 
+  LOG_DBG("time_query_cb time %"PRIu64"", *time);
 }
 
 struct nrf_modem_dect_phy_init_params dect_cb_config = {
   .callbacks ={
     .init = init,
     .op_complete = op_complete,
+    .rssi = rssi,
+    .rx_rssi = on_rx_rssi,
     .rx_stop = rx_stop,
     .pcc = pcc,
     .pcc_crc_err = pcc_crc_err,
     .pdc = pdc,
     .pdc_crc_err = pdc_crc_err,
-    .rssi = rssi,
     .link_config = link_config,
     .time_get = time_get
   }
@@ -255,12 +263,12 @@ void modem_rx(uint32_t rxMode, int time_s)
   rxOpsParams.rssi_level = 0;
   rxOpsParams.carrier = CARRIER;
   // modem clock ticks NRF_MODEM_DECT_MODEM_TIME_TICK_RATE_KHZ --> 69120*1000* TIME_S
-  rxOpsParams.duration = time_s*69120*1000; 
+  rxOpsParams.duration = time_s*69120*1000;
   rxOpsParams.filter.short_network_id = (uint8_t)(0x0a);
   rxOpsParams.filter.is_short_network_id_used = 1;
   rxOpsParams.filter.receiver_identity = 0;
   int err=nrf_modem_dect_phy_rx(&rxOpsParams);
-  if(err!=0) LOG_ERR("RX FAIL");
+  if(err!=0) LOG_ERR("RX FAIL, err: %d, errno: %d", err, errno);
   if(rxHandle<65000) rxHandle=31400;
   else rxHandle++;
 }
@@ -268,17 +276,17 @@ void modem_rx(uint32_t rxMode, int time_s)
 void modem_tx(uint32_t i)
 {
   // with the parameters, data must be 17 bytes
-  
+
   uint8_t tmp[DATA_LEN];
   tmp[0] = (i >> 24) & 0xff;
   tmp[1] = (i >> 16) & 0xff;
   tmp[2] = (i >> 8) & 0xff;
   tmp[3] = (i) & 0xff;
-  
+
   for (int j=4;j<DATA_LEN;j++)
   {
     tmp[j]=0x20;
-  }   
+  }
   //FIXME, length checks
   memcpy(_txData, tmp, sizeof(tmp));
   //data as TBS, FITS TO 1
@@ -303,12 +311,12 @@ void modem_tx(uint32_t i)
   // Setup the nrf_modem_dect_phy_operation_tx
   struct nrf_modem_dect_phy_tx_params txOpsParams;
   //immediate operation
-  txOpsParams.start_time = 0; 
+  txOpsParams.start_time = 0;
   txOpsParams.handle = txHandle;
   txOpsParams.network_id = 0x0a;
   txOpsParams.phy_type = 0;
   txOpsParams.lbt_rssi_threshold_max = 0;
-  //  EU carrier, see ETSI TS 103 636-2 5.4.2 for the calculation 
+  //  EU carrier, see ETSI TS 103 636-2 5.4.2 for the calculation
   txOpsParams.carrier = CARRIER;
   //no LBT done
   txOpsParams.lbt_period = 0;
@@ -318,26 +326,57 @@ void modem_tx(uint32_t i)
 
   // and call nrf_modem_dect_phy_schedule_tx_operation_add()
   int e=nrf_modem_dect_phy_tx(&txOpsParams);
-  if(e!=0) LOG_ERR("TX FAIL");
+  if(e!=0) LOG_ERR("TX FAIL, err: %d, errno: %d", e, errno);
   if(txHandle>30000) txHandle=1;
   else txHandle++;
 }
 
+static void modem_fault_handler(struct nrf_modem_fault_info *fault_info)
+{
+    printk("Modem fault! reason 0x%x, PC 0x%x\n", fault_info->reason, fault_info->program_counter);
+}
+
+static const struct nrf_modem_init_params init_params = {
+	.ipc_irq_prio = DT_IRQ_BY_IDX(DT_NODELABEL(ipc), 0, priority),
+	.shmem.ctrl = {
+		.base = PM_NRF_MODEM_LIB_CTRL_ADDRESS,
+		.size = CONFIG_NRF_MODEM_LIB_SHMEM_CTRL_SIZE,
+	},
+	.shmem.tx = {
+		.base = PM_NRF_MODEM_LIB_TX_ADDRESS,
+		.size = CONFIG_NRF_MODEM_LIB_SHMEM_TX_SIZE,
+	},
+	.shmem.rx = {
+		.base = PM_NRF_MODEM_LIB_RX_ADDRESS,
+		.size = CONFIG_NRF_MODEM_LIB_SHMEM_RX_SIZE,
+	},
+#if CONFIG_NRF_MODEM_LIB_TRACE_ENABLED
+	.shmem.trace = {
+		.base = PM_NRF_MODEM_LIB_TRACE_ADDRESS,
+		.size = CONFIG_NRF_MODEM_LIB_SHMEM_TRACE_SIZE,
+	},
+#endif
+	.fault_handler = modem_fault_handler,
+};
 
 void main(void)
   {
-  //send an increasing counter, start from 1 
+  //send an increasing counter, start from 1
+  int err;
   uint32_t i =1;
   LOG_INF("START DECT");
-  nrf_modem_dect_phy_init(&dect_cb_config);
+  err = nrf_modem_init(&init_params);
+  printk("libmodem init: %d\n", err);
+  err = nrf_modem_dect_phy_init(&dect_cb_config);
+  printk("dect init err: %d\n", err);
   dk_buttons_init(button_handler);
   dk_leds_init();
   k_msleep(1000);
-  
+
   LOG_INF("Listening on channel %d for 10 secs to see if there is transmissions", CARRIER);
   k_timer_start(&my_timer, K_SECONDS(10), K_SECONDS(10));
   modem_rx(NRF_MODEM_DECT_PHY_RX_MODE_SINGLE_SHOT, 10);
-  
+
   //wait for initial listen, what role to take
   while(INIT_DONE==0) k_msleep(1000);
 
@@ -374,20 +413,20 @@ void main(void)
     k_timer_start(&my_timer, K_SECONDS(10), K_SECONDS(10));
     //loop until above timer sets the EXIT flag when nothing received in 10 secs
     while(EXIT==0){
-      //really agressice checking of the RX mode is still active   
+      //really agressice checking of the RX mode is still active
       modem_rx(NRF_MODEM_DECT_PHY_RX_MODE_SINGLE_SHOT, 2);
       k_msleep(1);
     }
     //messages may be in logging pipeline, wait a sec
     k_msleep(1000);
-    LOG_INF("Exit on timeout or button"); 
+    LOG_INF("Exit on timeout or button");
     LOG_INF("*********************************************");
     //CRC error causes a missed message, so missing errors includes also CRC
-    LOG_INF("Received messages %d", received_ok); 
-    LOG_INF("Missed messages %d", (missing_errors-crc_errors)); 
-    LOG_INF("CRC errors  %d", crc_errors); 
-    //no float in vanilla print_k, need to config 
-    LOG_INF("RSSI_2 AVG  (rounded) %d", (int)rssi_average); 
+    LOG_INF("Received messages %d", received_ok);
+    LOG_INF("Missed messages %d", (missing_errors-crc_errors));
+    LOG_INF("CRC errors  %d", crc_errors);
+    //no float in vanilla print_k, need to config
+    LOG_INF("RSSI_2 AVG  (rounded) %d", (int)rssi_average);
     LOG_INF("*********************************************");
   }
 
